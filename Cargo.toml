@@ -1,0 +1,35 @@
+[package]
+name = "zan-sort"
+version = "0.1.0"
+edition = "2021"
+authors = ["Rhetro <rhetro@rhetroxc.com>"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+description = "A hardware-oriented hybrid sorting engine achieving near-linear scaling via arithmetic routing and parallel SoA."
+repository = "https://github.com/rhetro/zan-sort"
+documentation = "https://docs.rs/zan-sort"
+keywords = ["sort", "sorting", "algorithm", "parallel", "performance"]
+categories = ["algorithms", "data-structures", "memory-management"]
+
+[dev-dependencies]
+criterion = "0.4"
+proptest = "1.4.0"
+rayon = "1.8"
+
+[features]
+default = []
+# Disables standard library comparative fallbacks (std::sort_unstable),
+# forcing pure O(N) arithmetic routing for all arrays N > 16.
+pure = []
+
+[[bench]]
+name = "macro_performance"
+harness = false
+
+[[bench]]
+name = "micro_scaling"
+harness = false
+
+[[bench]]
+name = "parallel_performance"
+harness = false
