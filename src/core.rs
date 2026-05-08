@@ -274,9 +274,10 @@ fn zan_sort_local<T: SortKey>(data: &mut [T], min_key: u64, max_key: u64, ws: &m
         }
 
         // Merge local chunk data with potential overflow elements, writing back to the original slice
+        let base = data.as_mut_ptr();
         if !has_overflow {
             unsafe {
-                let dst = data.as_mut_ptr().add(write_ptr);
+                let dst = base.add(write_ptr);
                 let src = local.as_ptr() as *const T;
                 std::ptr::copy_nonoverlapping(src, dst, local_len);
             }
@@ -293,11 +294,11 @@ fn zan_sort_local<T: SortKey>(data: &mut [T], min_key: u64, max_key: u64, ws: &m
                         let o_key = overflow[overflow_idx].1.assume_init_ref().sort_key();
                         if l_key <= o_key {
                             let l_val = local.as_ptr().add(l_idx).cast::<T>().read();
-                            data.as_mut_ptr().add(write_ptr).write(l_val);
+                            base.add(write_ptr).write(l_val);
                             l_idx += 1;
                         } else {
                             let o_val = overflow[overflow_idx].1.assume_init_read();
-                            data.as_mut_ptr().add(write_ptr).write(o_val);
+                            base.add(write_ptr).write(o_val);
                             overflow_idx += 1;
                         }
                     }
@@ -305,14 +306,14 @@ fn zan_sort_local<T: SortKey>(data: &mut [T], min_key: u64, max_key: u64, ws: &m
                 } else if has_local {
                     unsafe {
                         let l_val = local.as_ptr().add(l_idx).cast::<T>().read();
-                        data.as_mut_ptr().add(write_ptr).write(l_val);
+                        base.add(write_ptr).write(l_val);
                     }
                     l_idx += 1;
                     write_ptr += 1;
                 } else if has_over {
                     unsafe {
                         let o_val = overflow[overflow_idx].1.assume_init_read();
-                        data.as_mut_ptr().add(write_ptr).write(o_val);
+                        base.add(write_ptr).write(o_val);
                     }
                     overflow_idx += 1;
                     write_ptr += 1;
