@@ -1,6 +1,6 @@
 [package]
 name = "zan-sort"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Rhetro <rhetro@rhetroxc.com>"]
 license = "MIT OR Apache-2.0"
@@ -21,6 +21,9 @@ default = []
 # Disables standard library comparative fallbacks (std::sort_unstable),
 # forcing pure O(N) arithmetic routing for all arrays N > 16.
 pure = []
+# Disables multi-threading (std::thread) and executes routing in a purely single-threaded, single-pass manner.
+# Use this when safely calling zan_sort within a WASM environment or an external worker thread pool such as Rayon.
+sequential = []
 
 [[bench]]
 name = "macro_performance"
@@ -32,4 +35,8 @@ harness = false
 
 [[bench]]
 name = "parallel_performance"
+harness = false
+
+[[bench]]
+name = "wasm_simulation"
 harness = false

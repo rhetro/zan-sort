@@ -1,5 +1,6 @@
 use std::cmp;
 use std::mem::MaybeUninit;
+#[cfg(not(feature = "sequential"))]
 use std::thread;
 
 /// The core trait of `zan-sort`.
@@ -135,8 +136,11 @@ struct ChunkData<T> {
 }
 
 impl<T> Default for ChunkData<T> {
+    #[inline(always)]
     fn default() -> Self {
-        unsafe { MaybeUninit::uninit().assume_init() }
+        Self {
+            data: [const { MaybeUninit::uninit() }; 16],
+        }
     }
 }
 
@@ -174,6 +178,42 @@ impl<T> Workspace<T> {
             self.datas.set_len(c);
         }
         self.overflow.clear();
+    }
+}
+
+/// A comprehensive zero-allocation memory arena for WASM sequential macro routing.
+/// Reuses buffer spaces to prevent linear memory growth and heap allocation overhead in single-threaded environments.
+#[cfg(feature = "sequential")]
+struct MacroWorkspace<T> {
+    buffer: Vec<MaybeUninit<T>>,
+    counts: Vec<usize>,
+    offsets: Vec<usize>,
+    local_ws: Workspace<T>,
+}
+
+#[cfg(feature = "sequential")]
+impl<T> MacroWorkspace<T> {
+    fn new() -> Self {
+        Self {
+            buffer: Vec::new(),
+            counts: Vec::new(),
+            offsets: Vec::new(),
+            local_ws: Workspace::new(),
+        }
+    }
+
+    #[inline(always)]
+    fn prepare(&mut self, n: usize, num_buckets: usize) {
+        if self.buffer.capacity() < n {
+            self.buffer.reserve_exact(n - self.buffer.capacity());
+        }
+        unsafe {
+            self.buffer.set_len(n);
+        }
+        self.counts.clear();
+        self.counts.resize(num_buckets, 0);
+        self.offsets.clear();
+        self.offsets.resize(num_buckets, 0);
     }
 }
 
@@ -251,7 +291,7 @@ fn zan_sort_local<T: SortKey>(data: &mut [T], min_key: u64, max_key: u64, ws: &m
             continue;
         }
 
-        let mut local: [MaybeUninit<T>; 16] = unsafe { MaybeUninit::uninit().assume_init() };
+        let mut local: [MaybeUninit<T>; 16] = [const { MaybeUninit::uninit() }; 16];
         let mut local_len = 0;
         let mut bmp = meta.bitmap;
 
@@ -325,66 +365,114 @@ fn zan_sort_local<T: SortKey>(data: &mut [T], min_key: u64, max_key: u64, ws: &m
     }
 }
 
-// --- Public API ---
+// --- Macro Phase Implementations ---
 
-/// High-performance, $O(N)$ generic hybrid sort.
-/// It dynamically scales from standard `pdqsort` (for mid-sized arrays) up to
-/// `Ordex`-inspired lock-free parallel arithmetic routing for massive arrays.
-pub fn zan_sort<T: SortKey + Send>(data: &mut [T]) {
+/// Sequential Macro Phase: Optimizes for single-threaded DRAM bandwidth saturation.
+/// Suitable for WASM environments, avoiding `std::thread` overhead and external worker pool conflicts.
+#[cfg(feature = "sequential")]
+fn zan_sort_macro_sequential<T: SortKey>(
+    data: &mut [T],
+    min_key: u64,
+    max_key: u64,
+    ws: &mut MacroWorkspace<T>,
+) {
     let n = data.len();
-    if n <= 1 {
-        return;
-    }
+    let num_buckets = (n / 32768).next_power_of_two().clamp(16, 16384);
 
-    // Dynamic Entry Point / Threshold Detection
-    #[cfg(not(feature = "pure"))]
-    {
-        if n <= 16 {
-            custom_insertion_sort(data);
-            return;
-        } else if n <= 5000 {
-            data.sort_unstable_by_key(|item| item.sort_key());
-            return;
-        }
-    }
+    let range = max_key.saturating_sub(min_key);
+    let shift_bits = if range > (u32::MAX as u64) {
+        64 - range.leading_zeros() - 32
+    } else {
+        0
+    };
+    let scaled_range = range >> shift_bits;
+    let multiplier = ((num_buckets as u64) << 32) / (scaled_range + 1);
 
-    #[cfg(feature = "pure")]
-    {
-        if n <= 16 {
-            custom_insertion_sort(data);
-            return;
-        }
-    }
+    ws.prepare(n, num_buckets);
 
-    // Determine the global bounds
-    let mut min_key = u64::MAX;
-    let mut max_key = u64::MIN;
+    // 1. O(N) 単一パスヒストグラム
     for item in data.iter() {
-        let key = item.sort_key();
-        if key < min_key {
-            min_key = key;
+        let v_diff = item.sort_key() - min_key;
+        let scaled_diff = v_diff >> shift_bits;
+        let bucket = ((scaled_diff * multiplier) >> 32) as usize;
+        ws.counts[bucket] += 1;
+    }
+
+    // 2. プレフィックスサム
+    let mut sum = 0;
+    for b in 0..num_buckets {
+        ws.offsets[b] = sum;
+        sum += ws.counts[b];
+    }
+    let mut write_heads = ws.offsets.clone();
+
+    // 3. O(N) 単一パス散布 (Zero-allocation Scatter)
+    let buffer_ptr = ws.buffer.as_mut_ptr();
+    for item in data.iter() {
+        let v_diff = item.sort_key() - min_key;
+        let scaled_diff = v_diff >> shift_bits;
+        let bucket = ((scaled_diff * multiplier) >> 32) as usize;
+        unsafe {
+            let dst = buffer_ptr.add(write_heads[bucket]);
+            std::ptr::write(dst, MaybeUninit::new(std::ptr::read(item)));
+            write_heads[bucket] += 1;
         }
-        if key > max_key {
-            max_key = key;
+    }
+
+    // 4. フォールバックと書き戻し
+    for b in 0..num_buckets {
+        // 直接アクセスすることで不要な参照ロックを回避
+        let count = ws.counts[b];
+        if count == 0 {
+            continue;
+        }
+
+        let offset = ws.offsets[b];
+        let block_ptr = unsafe { buffer_ptr.add(offset) as *mut T };
+        let block = unsafe { std::slice::from_raw_parts_mut(block_ptr, count) };
+
+        if count <= 16 {
+            custom_insertion_sort(block);
+        } else {
+            #[cfg(not(feature = "pure"))]
+            if count <= 5000 {
+                block.sort_unstable_by_key(|item| item.sort_key());
+                unsafe {
+                    std::ptr::copy_nonoverlapping(block_ptr, data.as_mut_ptr().add(offset), count);
+                }
+                continue;
+            }
+
+            let mut l_min = u64::MAX;
+            let mut l_max = u64::MIN;
+            for item in block.iter() {
+                let key = item.sort_key();
+                if key < l_min {
+                    l_min = key;
+                }
+                if key > l_max {
+                    l_max = key;
+                }
+            }
+
+            if l_min != l_max {
+                // 修正箇所: バッファを破壊する再帰呼び出しを排除し、並列版と同様に zan_sort_local に一本化
+                zan_sort_local(block, l_min, l_max, &mut ws.local_ws);
+            }
+        }
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(block_ptr, data.as_mut_ptr().add(offset), count);
         }
     }
+}
 
-    if min_key == max_key {
-        return;
-    }
-
-    // Route mid-scale data to single-threaded SoA bucketing; larger datasets fall through to the parallel Macro Phase.
-    if n <= 16384 {
-        let mut ws = Workspace::new();
-        zan_sort_local(data, min_key, max_key, &mut ws);
-        return;
-    }
-
-    // --- Macro Phase: Dynamic Multi-Bucket Routing ---
-
+/// Parallel Macro Phase: Dynamic Multi-Bucket Routing
+#[cfg(not(feature = "sequential"))]
+fn zan_sort_macro_parallel<T: SortKey + Send>(data: &mut [T], min_key: u64, max_key: u64) {
+    let n = data.len();
     // Clamp minimum buckets to 16 to prevent over-partitioning
-    let target_num_buckets = (n / 32768).next_power_of_two().clamp(16, 16384);
-    let num_buckets = target_num_buckets;
+    let num_buckets = (n / 32768).next_power_of_two().clamp(16, 16384);
 
     let range = max_key.saturating_sub(min_key);
     let shift_bits = if range > (u32::MAX as u64) {
@@ -452,7 +540,7 @@ pub fn zan_sort<T: SortKey + Send>(data: &mut [T]) {
                 // Allocate physical memory directly to bypass initialization overhead and Clone bounds.
                 let mut local_buf: Vec<[MaybeUninit<T>; BUF_SIZE]> =
                     Vec::with_capacity(num_buckets);
-                local_buf.set_len(num_buckets);
+                local_buf.resize_with(num_buckets, || [const { MaybeUninit::uninit() }; BUF_SIZE]);
 
                 let mut local_idx = vec![0usize; num_buckets];
 
@@ -464,7 +552,7 @@ pub fn zan_sort<T: SortKey + Send>(data: &mut [T]) {
                     let bucket = ((scaled_diff * multiplier) >> 32) as usize;
 
                     let idx = local_idx[bucket];
-                    local_buf[bucket][idx] = std::ptr::read(v_ptr as *const MaybeUninit<T>);
+                    local_buf[bucket][idx] = MaybeUninit::new(std::ptr::read(v_ptr));
                     local_idx[bucket] = idx + 1;
 
                     if idx + 1 == BUF_SIZE {
@@ -565,4 +653,135 @@ pub fn zan_sort<T: SortKey + Send>(data: &mut [T]) {
             });
         }
     });
+}
+
+// --- Public API ---
+
+/// Helper function to retrieve the global minimum and maximum keys from the dataset.
+#[inline(always)]
+fn find_bounds<T: SortKey>(data: &[T]) -> (u64, u64) {
+    let mut min_key = u64::MAX;
+    let mut max_key = u64::MIN;
+    for item in data.iter() {
+        let key = item.sort_key();
+        if key < min_key {
+            min_key = key;
+        }
+        if key > max_key {
+            max_key = key;
+        }
+    }
+    (min_key, max_key)
+}
+
+/// High-performance, $O(N)$ generic hybrid sort.
+/// It dynamically scales from standard `pdqsort` (for mid-sized arrays) up to
+/// `Ordex`-inspired lock-free parallel arithmetic routing for massive arrays.
+///
+/// Native Parallel Version (Requires Send Trait)
+#[cfg(not(feature = "sequential"))]
+pub fn zan_sort<T: SortKey + Send>(data: &mut [T]) {
+    let n = data.len();
+    if n <= 1 {
+        return;
+    }
+
+    // Dynamic Entry Point / Threshold Detection
+    #[cfg(not(feature = "pure"))]
+    {
+        if n <= 16 {
+            custom_insertion_sort(data);
+            return;
+        } else if n <= 5000 {
+            data.sort_unstable_by_key(|item| item.sort_key());
+            return;
+        }
+    }
+
+    #[cfg(feature = "pure")]
+    {
+        if n <= 16 {
+            custom_insertion_sort(data);
+            return;
+        }
+    }
+
+    // Determine the global bounds
+    let (min_key, max_key) = find_bounds(data);
+    if min_key == max_key {
+        return;
+    }
+
+    // Route mid-scale data to single-threaded SoA bucketing; larger datasets fall through to the parallel Macro Phase.
+    if n <= 16384 {
+        let mut ws = Workspace::new();
+        zan_sort_local(data, min_key, max_key, &mut ws);
+        return;
+    }
+
+    zan_sort_macro_parallel(data, min_key, max_key);
+}
+
+/// High-performance, $O(N)$ generic hybrid sort.
+///
+/// WASM/Sequential Version (Does NOT require Send Trait).
+/// Uses purely sequential iterations and avoids OS-level threading constraints.
+#[cfg(feature = "sequential")]
+pub fn zan_sort<T: SortKey>(data: &mut [T]) {
+    let n = data.len();
+    if n <= 1 {
+        return;
+    }
+
+    // Dynamic Entry Point / Threshold Detection
+    #[cfg(not(feature = "pure"))]
+    {
+        if n <= 16 {
+            custom_insertion_sort(data);
+            return;
+        } else if n <= 5000 {
+            data.sort_unstable_by_key(|item| item.sort_key());
+            return;
+        }
+    }
+
+    #[cfg(feature = "pure")]
+    {
+        if n <= 16 {
+            custom_insertion_sort(data);
+            return;
+        }
+    }
+
+    // Determine the global bounds
+    let (min_key, max_key) = find_bounds(data);
+    if min_key == max_key {
+        return;
+    }
+
+    // Route mid-scale data to single-threaded SoA bucketing; larger datasets fall through to the sequential Macro Phase.
+    if n <= 16384 {
+        let mut ws = Workspace::new();
+        zan_sort_local(data, min_key, max_key, &mut ws);
+        return;
+    }
+
+    let mut ws = MacroWorkspace::new();
+    zan_sort_macro_sequential(data, min_key, max_key, &mut ws);
+}
+
+/// A swap-based sorting API that takes ownership of the vector and returns it.
+/// Useful for environments where zero-copy or ownership transfer is preferred (e.g., WASM bindings).
+#[cfg(not(feature = "sequential"))]
+pub fn zan_sort_into<T: SortKey + Send>(mut data: Vec<T>) -> Vec<T> {
+    zan_sort(&mut data);
+    data
+}
+
+/// A swap-based sorting API that takes ownership of the vector and returns it.
+/// Sequential version (Does NOT require Send Trait).
+#[cfg(feature = "sequential")]
+pub fn zan_sort_into<T: SortKey>(mut data: Vec<T>) -> Vec<T> {
+    zan_sort(&mut data);
+    data
 }
