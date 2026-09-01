@@ -42,13 +42,15 @@ For large datasets (millions to hundreds of millions of elements), overall throu
 
 ```toml
 [dependencies]
-zan-sort = "0.2.0"
+zan-sort = "0.2.1"
 ```
 
-### ⚠️ Important Note on Threading & External Pools
-By default, `zan-sort` automatically detects available CPU cores and aggressively saturates them. **Do NOT call the default `zan_sort` from within an external parallel iterator (e.g., Rayon's `par_iter_mut`).** Doing so causes severe thread explosion. 
+### ⚠️ Important Note on External Parallel Executors (Rayon, etc.)
+`zan-sort` does **not** integrate with dynamic work-stealing runtimes like Rayon. Its parallel architecture is strictly deterministic: thread count, memory topology, and disjoint write regions are all computed completely upfront via static prefix-sum routing.
 
-If you are operating within a Rayon worker pool or targeting WebAssembly, use the `sequential` feature flag to disable internal thread generation and safely execute the sort on the current thread.
+Calling the default `zan_sort` inside any external parallel executor (e.g., Rayon's `par_iter_mut`) will cause severe thread explosion and destroy hardware cache locality.
+
+If you are forced to operate within an external worker pool, or are targeting strictly single-threaded environments like WebAssembly, use the `sequential` feature flag. **This does not make `zan-sort` "compatible" with Rayon.** It simply disables `zan-sort`'s internal topology generation, forcing it to run deterministically on the current thread and ignoring the external dynamic executor entirely.
 
 ### Swap-based API (`zan_sort_into`)
 For environments where zero-copy ownership transfers are preferred (like WebAssembly bindings), `zan-sort` provides a swap-based API to avoid unnecessary write-back copies:
