@@ -42,7 +42,7 @@ For large datasets (millions to hundreds of millions of elements), overall throu
 
 ```toml
 [dependencies]
-zan-sort = "0.2.1"
+zan-sort = "0.2.2"
 ```
 
 ### ⚠️ Important Note on External Parallel Executors (Rayon, etc.)
@@ -54,7 +54,10 @@ If you are forced to operate within an external worker pool, or are targeting st
 
 ### Swap-based API (`zan_sort_into`)
 For environments where zero-copy ownership transfers are preferred (like WebAssembly bindings), `zan-sort` provides a swap-based API to avoid unnecessary write-back copies:
+
 ```rust
+# use zan_sort::core::zan_sort_into;
+# let my_data_vec = vec![5, 2, 8, 1];
 let sorted_data = zan_sort_into(my_data_vec);
 ```
 
@@ -88,16 +91,18 @@ impl SortKey for User {
 
 ## Benchmark Results
 
-### 1. WebAssembly / Sequential Simulation (Linear Memory Optimization)
-Evaluates throughput in a strict single-threaded environment targeting massive payloads (simulating an 8K RGBA image buffer, ~132MB continuous memory). Proves the architectural dominance of single-pass routing over O(N log N) cache-thrashing.
+## Benchmark Results
+
+### 1. Single-Thread Large Payload Throughput (Linear Memory Optimization)
+Evaluates single-threaded throughput targeting massive contiguous payloads (modeling an 8K RGBA image buffer, ~132MB continuous memory). Proves the architectural dominance of single-pass routing over O(N log N) cache-thrashing in constrained single-core and WebAssembly execution models.
 
 * **Target:** 33,177,600 Elements (`RgbaPixel` Struct)
-* **Resource Constraint:** Single Thread (`sequential` feature)
+* **Resource Constraint:** Single Thread (`sequential` feature / `zan_sort_into`)
 
 | Algorithm | Execution Time | vs std |
 |:---|:---:|:---:|
-| `std::sort_unstable_by_key` | ~621.37 ms | Baseline |
-| **`zan-sort (sequential / into)`** | **~422.82 ms** | **+32.0% Faster (1.47x)** |
+| `std::sort_unstable_by_key` | ~663.67 ms | Baseline |
+| **`zan-sort (sequential / into)`** | **~161.72 ms** | **+75.6% Faster (4.10x)** |
 
 ### 2. Parallel Architecture Scaling (Hardware Saturation)
 Evaluates architectural superiority when completely restricted to the same CPU resources.

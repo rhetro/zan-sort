@@ -2,7 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion
 use zan_sort::core::zan_sort_into;
 use zan_sort::prelude::*;
 
-// WASM環境でよく扱われるRGBAピクセルデータを模した構造体
+// Struct modeling RGBA pixel data commonly handled in WASM environments
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
 struct RgbaPixel {
@@ -12,16 +12,16 @@ struct RgbaPixel {
     a: u8,
 }
 
-// 輝度（Luminance）や特定の色チャンネルを絶対的なソートキーとする
+// Uses luminance or specific color channels as an absolute sort key
 impl SortKey for RgbaPixel {
     #[inline(always)]
     fn sort_key(&self) -> u64 {
-        // 例: (R + G + B)の合計値をキーにする（簡易的な輝度ソート）
+        // Example: Use the sum of (R + G + B) as the key (simplified luminance sort)
         (self.r as u64) + (self.g as u64) + (self.b as u64)
     }
 }
 
-// 軽量なXorshift PRNG
+// Lightweight Xorshift PRNG
 fn xorshift32(seed: &mut u32) -> u32 {
     *seed ^= *seed << 13;
     *seed ^= *seed >> 17;
@@ -44,13 +44,13 @@ fn generate_image_buffer(pixel_count: usize) -> Vec<RgbaPixel> {
         .collect()
 }
 
-fn bench_wasm_simulation(c: &mut Criterion) {
-    // 8K解像度相当 (約3300万ピクセル、約132MBの連続メモリ)
+fn bench_single_thread_throughput(c: &mut Criterion) {
+    // Equivalent to 8K resolution (~33.17 million pixels, ~132MB contiguous memory)
     let size = 33_177_600;
-    let mut group = c.benchmark_group(format!("WASM Simulation ({} Pixels)", size));
+    let mut group = c.benchmark_group(format!("Single-Thread Throughput ({} Pixels)", size));
     group.sample_size(10);
 
-    // 1. 標準ライブラリ (O(N log N) / キャッシュミス多発)
+    // 1. Standard library (O(N log N) / frequent cache misses)
     group.bench_function("std::sort_unstable_by_key", |b| {
         b.iter_batched(
             || generate_image_buffer(size),
@@ -62,8 +62,8 @@ fn bench_wasm_simulation(c: &mut Criterion) {
         )
     });
 
-    // 2. zan-sort (Sequential / Zero-allocation 単一パス)
-    // WASMでの利用を想定し、zan_sort_into で所有権ごと処理する
+    // 2. zan-sort (Sequential / Zero-allocation single pass)
+    // Designed for WASM usage, taking full ownership via zan_sort_into
     group.bench_function("zan-sort (sequential / into)", |b| {
         b.iter_batched(
             || generate_image_buffer(size),
@@ -78,5 +78,5 @@ fn bench_wasm_simulation(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_wasm_simulation);
+criterion_group!(benches, bench_single_thread_throughput);
 criterion_main!(benches);

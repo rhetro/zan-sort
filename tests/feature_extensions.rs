@@ -1,13 +1,13 @@
 use zan_sort::core::zan_sort_into;
+
+#[cfg(feature = "sequential")]
 use zan_sort::prelude::*;
 
-// ==========================================
-// 1. スワップ型API (zan_sort_into) のテスト
-// ==========================================
+// 1. Swap-based API (zan_sort_into) Tests
 #[test]
 fn test_zan_sort_into_basic() {
     let data = vec![99, 42, 1, 7, 3, 100, 50];
-    // 所有権を渡して、ソート済みのVecを直接受け取る
+    // Take ownership and directly receive the sorted Vec
     let sorted = zan_sort_into(data);
 
     assert_eq!(sorted, vec![1, 3, 7, 42, 50, 99, 100]);
@@ -16,7 +16,7 @@ fn test_zan_sort_into_basic() {
 #[test]
 fn test_zan_sort_into_macro_scale() {
     let size = 20_000;
-    // 逆順の配列を生成 (Macro Phase / N > 16384 の発動を確認)
+    // Generate a reverse-ordered vector (Verify Macro Phase / N > 16384 execution)
     let data: Vec<u32> = (0..size).map(|i| (size - i) as u32).collect();
 
     let sorted = zan_sort_into(data);
@@ -26,10 +26,10 @@ fn test_zan_sort_into_macro_scale() {
 }
 
 // ==========================================
-// 2. sequentialモード専用: !Send 型のソートテスト
+// 2. Sequential-mode only: !Send type sorting test
 // ==========================================
-// WASM環境などスレッドを立てない前提において、
-// Rc などの `!Send` な型が含まれる構造体を安全にソートできるか検証します。
+// Verifies that structures containing `!Send` types (e.g., Rc) can be safely sorted
+// in environments like WASM where multi-threading is not assumed.
 #[cfg(feature = "sequential")]
 #[test]
 fn test_non_send_type_sorting() {
@@ -39,7 +39,7 @@ fn test_non_send_type_sorting() {
     #[derive(Clone)]
     struct NonSendItem {
         id: u32,
-        // Rc を含めることで、意図的に T: Send 制約を満たさなくする
+        // Include Rc to intentionally violate the T: Send bound
         _heavy_dom_node: Rc<RefCell<String>>,
     }
 
@@ -64,7 +64,7 @@ fn test_non_send_type_sorting() {
         },
     ];
 
-    // sequentialモードでは T: Send が不要なためコンパイルが通る
+    // Compiles successfully in sequential mode as T: Send is not required
     zan_sort(&mut data);
 
     assert_eq!(data[0].id, 1);
@@ -73,13 +73,13 @@ fn test_non_send_type_sorting() {
 }
 
 // ==========================================
-// 3. sequentialモード専用: 大規模ゼロアロケーションの確認
+// 3. Sequential-mode only: Large-scale zero-allocation verification
 // ==========================================
 #[cfg(feature = "sequential")]
 #[test]
 fn test_sequential_macro_routing_bounds() {
-    // 境界値(16384)を超えるサイズで、MacroWorkspace が正しく
-    // ルーティングとフォールバックを行えるかを検証
+    // Verify that MacroWorkspace correctly performs routing and fallback
+    // for sizes exceeding the threshold (16384).
     let size = 35_000;
     let mut data: Vec<u32> = (0..size).map(|i| (i * 17) % 100_000).collect();
     let mut expected = data.clone();
