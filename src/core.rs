@@ -99,33 +99,11 @@ pub fn custom_insertion_sort<T: SortKey>(arr: &mut [T]) {
 /// Similar to `custom_insertion_sort`, but specifically handles tuples containing chunk IDs.
 #[inline(always)]
 fn sort_overflow<T: SortKey>(arr: &mut [(usize, MaybeUninit<T>)]) {
-    let len = arr.len();
-    if len <= 1 {
-        return;
-    }
-
-    let base_ptr = arr.as_mut_ptr();
-    for i in 1..len {
-        unsafe {
-            let val_ptr = base_ptr.add(i);
-            let val = std::ptr::read(val_ptr);
-            let val_chunk = val.0;
-            let val_key = val.1.assume_init_ref().sort_key();
-            let mut j = i;
-            while j > 0 {
-                let prev_ptr = base_ptr.add(j - 1);
-                let prev_chunk = (*prev_ptr).0;
-                let prev_key = (*prev_ptr).1.assume_init_ref().sort_key();
-                if prev_chunk > val_chunk || (prev_chunk == val_chunk && prev_key > val_key) {
-                    std::ptr::write(base_ptr.add(j), std::ptr::read(prev_ptr));
-                    j -= 1;
-                } else {
-                    break;
-                }
-            }
-            std::ptr::write(base_ptr.add(j), val);
-        }
-    }
+    arr.sort_unstable_by_key(|x| {
+        let chunk_id = x.0;
+        let key = unsafe { x.1.assume_init_ref().sort_key() };
+        (chunk_id, key)
+    });
 }
 
 // --- Structure of Arrays (SoA) Definitions for the Micro/Mid Phase ---
@@ -232,7 +210,7 @@ fn zan_sort_local<T: SortKey>(data: &mut [T], min_key: u64, max_key: u64, ws: &m
     let c = cmp::max(1, n / 4);
     let m = (c * 16 - 1) as u64;
     // Pre-calculate the routing multiplier to avoid division in the loop
-    let multiplier = (((m as u128) << 32) / (range as u128)) as u64;
+    let multiplier = (((m as u128) << 64) / (range as u128)) as u128;
 
     ws.prepare(c);
     let metas = &mut ws.metas;
@@ -245,7 +223,7 @@ fn zan_sort_local<T: SortKey>(data: &mut [T], min_key: u64, max_key: u64, ws: &m
             let v = std::ptr::read(data.as_ptr().add(i));
             let v_key = v.sort_key();
             let v_diff = v_key - min_key;
-            let i_v = ((v_diff as u128 * multiplier as u128) >> 32) as usize;
+            let i_v = (((v_diff as u128) * multiplier) >> 64) as usize;
 
             let chunk_id = cmp::min(i_v >> 4, c - 1);
             let offset = i_v & 15;
@@ -380,25 +358,18 @@ fn zan_sort_macro_sequential<T: SortKey>(
     let num_buckets = (n / 32768).next_power_of_two().clamp(16, 16384);
 
     let range = max_key.saturating_sub(min_key);
-    let shift_bits = if range > (u32::MAX as u64) {
-        64 - range.leading_zeros() - 32
-    } else {
-        0
-    };
-    let scaled_range = range >> shift_bits;
-    let multiplier = ((num_buckets as u64) << 32) / (scaled_range + 1);
+    let multiplier = (((num_buckets as u128) << 64) / ((range as u128) + 1)) as u128;
 
     ws.prepare(n, num_buckets);
 
-    // 1. O(N) 単一パスヒストグラム
+    // 1. O(N) Single-path Histogram
     for item in data.iter() {
         let v_diff = item.sort_key() - min_key;
-        let scaled_diff = v_diff >> shift_bits;
-        let bucket = ((scaled_diff * multiplier) >> 32) as usize;
+        let bucket = (((v_diff as u128) * multiplier) >> 64) as usize;
         ws.counts[bucket] += 1;
     }
 
-    // 2. プレフィックスサム
+    // 2. Prefix Sum
     let mut sum = 0;
     for b in 0..num_buckets {
         ws.offsets[b] = sum;
@@ -406,12 +377,11 @@ fn zan_sort_macro_sequential<T: SortKey>(
     }
     let mut write_heads = ws.offsets.clone();
 
-    // 3. O(N) 単一パス散布 (Zero-allocation Scatter)
+    // 3. O(N) Single-path Scatter (Zero-allocation Scatter)
     let buffer_ptr = ws.buffer.as_mut_ptr();
     for item in data.iter() {
         let v_diff = item.sort_key() - min_key;
-        let scaled_diff = v_diff >> shift_bits;
-        let bucket = ((scaled_diff * multiplier) >> 32) as usize;
+        let bucket = (((v_dif as u128) * multiplier) >> 64) as usize;
         unsafe {
             let dst = buffer_ptr.add(write_heads[bucket]);
             std::ptr::write(dst, MaybeUninit::new(std::ptr::read(item)));
@@ -419,9 +389,8 @@ fn zan_sort_macro_sequential<T: SortKey>(
         }
     }
 
-    // 4. フォールバックと書き戻し
+    // 4. Fallback
     for b in 0..num_buckets {
-        // 直接アクセスすることで不要な参照ロックを回避
         let count = ws.counts[b];
         if count == 0 {
             continue;
@@ -456,7 +425,6 @@ fn zan_sort_macro_sequential<T: SortKey>(
             }
 
             if l_min != l_max {
-                // 修正箇所: バッファを破壊する再帰呼び出しを排除し、並列版と同様に zan_sort_local に一本化
                 zan_sort_local(block, l_min, l_max, &mut ws.local_ws);
             }
         }

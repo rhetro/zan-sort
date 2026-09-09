@@ -1,6 +1,6 @@
 [package]
 name = "zan-sort"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 authors = ["Rhetro <rhetro@rhetroxc.com>"]
 license = "MIT OR Apache-2.0"
@@ -38,5 +38,9 @@ name = "parallel_performance"
 harness = false
 
 [[bench]]
-name = "wasm_simulation"
+name = "single_thread_throughput"
+harness = false
+
+[[bench]]
+name = "fallback_robustness"
 harness = false
