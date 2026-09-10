@@ -42,7 +42,7 @@ For large datasets (millions to hundreds of millions of elements), overall throu
 
 ```toml
 [dependencies]
-zan-sort = "0.3.0"
+zan-sort = "0.3.1"
 ```
 
 ### ⚠️ Important Note on External Parallel Executors (Rayon, etc.)
@@ -127,3 +127,13 @@ Real-world performance gains replacing standard single-threaded sorting.
 ## Safety & Miri
 
 All unsafe code paths (`ptr::read` / `ptr::write`) are covered by dedicated Miri tests verifying the absence of undefined behavior (use-after-free, double free, invalid pointer reads). The parallel routing phase operates entirely on disjoint prefix-sum offsets without shared mutable state, rendering it race-free by construction.
+
+## License
+
+This project is licensed under either of:
+
+* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+* MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+
+at your option.
+
