@@ -42,7 +42,7 @@ For large datasets (millions to hundreds of millions of elements), overall throu
 
 ```toml
 [dependencies]
-zan-sort = "0.3.1"
+zan-sort = "0.3.2"
 ```
 
 ### ⚠️ Important Note on External Parallel Executors (Rayon, etc.)
@@ -126,7 +126,11 @@ Real-world performance gains replacing standard single-threaded sorting.
 
 ## Safety & Miri
 
-All unsafe code paths (`ptr::read` / `ptr::write`) are covered by dedicated Miri tests verifying the absence of undefined behavior (use-after-free, double free, invalid pointer reads). The parallel routing phase operates entirely on disjoint prefix-sum offsets without shared mutable state, rendering it race-free by construction.
+`zan-sort` maintains strict memory safety standards for its optimized low-level pointer operations (`ptr::read`, `ptr::write`, and uninitialized memory buffers):
+
+- **Strict Provenance Compliant:** Pointer operations strictly follow Rust's Strict Provenance rules, entirely avoiding raw integer-to-pointer casts (`as` casts). Thread boundaries utilize zero-cost Send/Sync raw pointer wrappers.
+- **Miri Verified:** The entire test suite, including property-based fuzzing and edge cases, passes `cargo +nightly miri test` with zero warnings or undefined behavior (no use-after-free, double-free, invalid memory reads, or data races).
+- **Constructive Race-Freedom:** Parallel routing operates exclusively on pre-computed disjoint prefix-sum offsets without shared mutable state, ensuring safe concurrent memory scatter writes.
 
 ## License
 
@@ -136,4 +140,3 @@ This project is licensed under either of:
 * MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
 at your option.
-

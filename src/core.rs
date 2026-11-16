@@ -106,6 +106,36 @@ fn sort_overflow<T: SortKey>(arr: &mut [(usize, MaybeUninit<T>)]) {
     });
 }
 
+// --- Pointer Wrapper for Thread Safety without Integer Casting ---
+
+#[cfg(not(feature = "sequential"))]
+struct SendPtr<T>(*mut T);
+
+#[cfg(not(feature = "sequential"))]
+impl<T> Copy for SendPtr<T> {}
+
+#[cfg(not(feature = "sequential"))]
+impl<T> Clone for SendPtr<T> {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+#[cfg(not(feature = "sequential"))]
+unsafe impl<T: Send> Send for SendPtr<T> {}
+
+#[cfg(not(feature = "sequential"))]
+unsafe impl<T: Sync> Sync for SendPtr<T> {}
+
+#[cfg(not(feature = "sequential"))]
+impl<T> SendPtr<T> {
+    #[inline(always)]
+    fn get(self) -> *mut T {
+        self.0
+    }
+}
+
 // --- Structure of Arrays (SoA) Definitions for the Micro/Mid Phase ---
 
 #[repr(C, align(64))]
@@ -381,7 +411,7 @@ fn zan_sort_macro_sequential<T: SortKey>(
     let buffer_ptr = ws.buffer.as_mut_ptr();
     for item in data.iter() {
         let v_diff = item.sort_key() - min_key;
-        let bucket = (((v_dif as u128) * multiplier) >> 64) as usize;
+        let bucket = (((v_diff as u128) * multiplier) >> 64) as usize;
         unsafe {
             let dst = buffer_ptr.add(write_heads[bucket]);
             std::ptr::write(dst, MaybeUninit::new(std::ptr::read(item)));
@@ -491,8 +521,8 @@ fn zan_sort_macro_parallel<T: SortKey + Send>(data: &mut [T], min_key: u64, max_
         buffer.set_len(n);
     }
 
-    let data_ptr = data.as_mut_ptr() as usize;
-    let buffer_ptr = buffer.as_mut_ptr() as usize;
+    let data_ptr = SendPtr(data.as_mut_ptr());
+    let buffer_ptr = SendPtr(buffer.as_mut_ptr());
 
     // Step 3: Lock-free Parallel Scatter with Heap-allocated Local Buffers
     thread::scope(|s| {
@@ -501,8 +531,8 @@ fn zan_sort_macro_parallel<T: SortKey + Send>(data: &mut [T], min_key: u64, max_
             let chunk_end = cmp::min(chunk_start + chunk_size, n);
 
             s.spawn(move || unsafe {
-                let d_ptr = data_ptr as *mut T;
-                let b_ptr = buffer_ptr as *mut MaybeUninit<T>;
+                let d_ptr = data_ptr.get();
+                let b_ptr = buffer_ptr.get();
 
                 const BUF_SIZE: usize = 16;
                 // Allocate physical memory directly to bypass initialization overhead and Clone bounds.
@@ -575,8 +605,8 @@ fn zan_sort_macro_parallel<T: SortKey + Send>(data: &mut [T], min_key: u64, max_
             let b_offsets = &bucket_offsets;
 
             s.spawn(move || unsafe {
-                let d_ptr = data_ptr as *mut T;
-                let b_ptr = buffer_ptr as *mut MaybeUninit<T>;
+                let d_ptr = data_ptr.get();
+                let b_ptr = buffer_ptr.get();
 
                 for b in start_b..end_b {
                     let count = g_counts[b];

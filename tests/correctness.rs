@@ -179,3 +179,32 @@ fn test_memory_safety_drop_counts() {
         num_elements
     );
 }
+
+#[test]
+fn test_macro_sequential_non_copy_type() {
+    #[derive(Debug, PartialEq, Eq)]
+    struct NonCopyItem {
+        key: u64,
+        _payload: String,
+    }
+
+    impl SortKey for NonCopyItem {
+        fn sort_key(&self) -> u64 {
+            self.key
+        }
+    }
+
+    let size = 20_000;
+    let mut data: Vec<NonCopyItem> = (0..size)
+        .rev()
+        .map(|i| NonCopyItem {
+            key: i as u64,
+            _payload: format!("item_{}", i),
+        })
+        .collect();
+
+    zan_sort(&mut data);
+
+    assert_eq!(data.len(), size);
+    assert!(data.windows(2).all(|w| w[0].key <= w[1].key));
+}
